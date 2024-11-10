@@ -2,27 +2,36 @@ use collab_ui::collab_panel;
 use gpui::{Menu, MenuItem, OsAction};
 use terminal_view::terminal_panel;
 
-pub fn app_menus() -> Vec<Menu<'static>> {
+pub fn app_menus() -> Vec<Menu> {
     use zed_actions::Quit;
 
     vec![
         Menu {
-            name: "Zed",
+            name: "Zed".into(),
             items: vec![
                 MenuItem::action("About Zed…", zed_actions::About),
                 MenuItem::action("Check for Updates", auto_update::Check),
                 MenuItem::separator(),
                 MenuItem::submenu(Menu {
-                    name: "Preferences",
+                    name: "Settings".into(),
                     items: vec![
                         MenuItem::action("Open Settings", super::OpenSettings),
                         MenuItem::action("Open Key Bindings", zed_actions::OpenKeymap),
                         MenuItem::action("Open Default Settings", super::OpenDefaultSettings),
-                        MenuItem::action("Open Default Key Bindings", super::OpenDefaultKeymap),
-                        MenuItem::action("Open Local Settings", super::OpenLocalSettings),
+                        MenuItem::action(
+                            "Open Default Key Bindings",
+                            zed_actions::OpenDefaultKeymap,
+                        ),
+                        MenuItem::action("Open Project Settings", super::OpenProjectSettings),
                         MenuItem::action("Select Theme...", theme_selector::Toggle::default()),
                     ],
                 }),
+                MenuItem::separator(),
+                MenuItem::submenu(Menu {
+                    name: "Services".into(),
+                    items: vec![],
+                }),
+                MenuItem::separator(),
                 MenuItem::action("Extensions", extensions_ui::Extensions),
                 MenuItem::action("Install CLI", install_cli::Install),
                 MenuItem::separator(),
@@ -33,7 +42,7 @@ pub fn app_menus() -> Vec<Menu<'static>> {
             ],
         },
         Menu {
-            name: "File",
+            name: "File".into(),
             items: vec![
                 MenuItem::action("New", workspace::NewFile),
                 MenuItem::action("New Window", workspace::NewWindow),
@@ -58,7 +67,7 @@ pub fn app_menus() -> Vec<Menu<'static>> {
             ],
         },
         Menu {
-            name: "Edit",
+            name: "Edit".into(),
             items: vec![
                 MenuItem::os_action("Undo", editor::actions::Undo, OsAction::Undo),
                 MenuItem::os_action("Redo", editor::actions::Redo, OsAction::Redo),
@@ -77,7 +86,7 @@ pub fn app_menus() -> Vec<Menu<'static>> {
             ],
         },
         Menu {
-            name: "Selection",
+            name: "Selection".into(),
             items: vec![
                 MenuItem::os_action(
                     "Select All",
@@ -102,7 +111,7 @@ pub fn app_menus() -> Vec<Menu<'static>> {
             ],
         },
         Menu {
-            name: "View",
+            name: "View".into(),
             items: vec![
                 MenuItem::action("Zoom In", zed_actions::IncreaseBufferFontSize),
                 MenuItem::action("Zoom Out", zed_actions::DecreaseBufferFontSize),
@@ -113,7 +122,7 @@ pub fn app_menus() -> Vec<Menu<'static>> {
                 MenuItem::action("Toggle Bottom Dock", workspace::ToggleBottomDock),
                 MenuItem::action("Close All Docks", workspace::CloseAllDocks),
                 MenuItem::submenu(Menu {
-                    name: "Editor Layout",
+                    name: "Editor Layout".into(),
                     items: vec![
                         MenuItem::action("Split Up", workspace::SplitUp),
                         MenuItem::action("Split Down", workspace::SplitDown),
@@ -132,7 +141,7 @@ pub fn app_menus() -> Vec<Menu<'static>> {
             ],
         },
         Menu {
-            name: "Go",
+            name: "Go".into(),
             items: vec![
                 MenuItem::action("Back", workspace::GoBack),
                 MenuItem::action("Forward", workspace::GoForward),
@@ -145,6 +154,7 @@ pub fn app_menus() -> Vec<Menu<'static>> {
                 MenuItem::action("Go to Line/Column...", editor::actions::ToggleGoToLine),
                 MenuItem::separator(),
                 MenuItem::action("Go to Definition", editor::actions::GoToDefinition),
+                MenuItem::action("Go to Declaration", editor::actions::GoToDeclaration),
                 MenuItem::action("Go to Type Definition", editor::actions::GoToTypeDefinition),
                 MenuItem::action("Find All References", editor::actions::FindAllReferences),
                 MenuItem::separator(),
@@ -153,7 +163,7 @@ pub fn app_menus() -> Vec<Menu<'static>> {
             ],
         },
         Menu {
-            name: "Window",
+            name: "Window".into(),
             items: vec![
                 MenuItem::action("Minimize", super::Minimize),
                 MenuItem::action("Zoom", super::Zoom),
@@ -161,7 +171,7 @@ pub fn app_menus() -> Vec<Menu<'static>> {
             ],
         },
         Menu {
-            name: "Help",
+            name: "Help".into(),
             items: vec![
                 MenuItem::action("View Telemetry", zed_actions::OpenTelemetryLog),
                 MenuItem::action("View Dependency Licenses", zed_actions::OpenLicenses),

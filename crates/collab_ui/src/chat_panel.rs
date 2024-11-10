@@ -111,6 +111,7 @@ impl ChatPanel {
                 this.is_scrolled_to_bottom = !event.is_scrolled;
             }));
 
+            let local_offset = chrono::Local::now().offset().local_minus_utc();
             let mut this = Self {
                 fs,
                 client,
@@ -120,7 +121,7 @@ impl ChatPanel {
                 active_chat: Default::default(),
                 pending_serialization: Task::ready(None),
                 message_editor: input_editor,
-                local_timezone: cx.local_timezone(),
+                local_timezone: UtcOffset::from_whole_seconds(local_offset).unwrap(),
                 subscriptions: Vec::new(),
                 is_scrolled_to_bottom: true,
                 active: false,
@@ -559,7 +560,7 @@ impl ChatPanel {
                 },
             )
             .child(
-                self.render_popover_buttons(&cx, message_id, can_delete_message, can_edit_message)
+                self.render_popover_buttons(cx, message_id, can_delete_message, can_edit_message)
                     .mt_neg_2p5(),
             )
     }
@@ -704,12 +705,12 @@ impl ChatPanel {
                 menu.entry(
                     "Copy message text",
                     None,
-                    cx.handler_for(&this, move |this, cx| {
+                    cx.handler_for(this, move |this, cx| {
                         if let Some(message) = this.active_chat().and_then(|active_chat| {
                             active_chat.read(cx).find_loaded_message(message_id)
                         }) {
                             let text = message.body.clone();
-                            cx.write_to_clipboard(ClipboardItem::new(text))
+                            cx.write_to_clipboard(ClipboardItem::new_string(text))
                         }
                     }),
                 )
@@ -717,7 +718,7 @@ impl ChatPanel {
                     menu.entry(
                         "Delete message",
                         None,
-                        cx.handler_for(&this, move |this, cx| this.remove_message(message_id, cx)),
+                        cx.handler_for(this, move |this, cx| this.remove_message(message_id, cx)),
                     )
                 })
             })
@@ -801,13 +802,11 @@ impl ChatPanel {
                 {
                     task.detach();
                 }
-            } else {
-                if let Some(task) = chat
-                    .update(cx, |chat, cx| chat.send_message(message, cx))
-                    .log_err()
-                {
-                    task.detach();
-                }
+            } else if let Some(task) = chat
+                .update(cx, |chat, cx| chat.send_message(message, cx))
+                .log_err()
+            {
+                task.detach();
             }
         }
     }
@@ -853,7 +852,7 @@ impl ChatPanel {
             let scroll_to_message_id = this.update(&mut cx, |this, cx| {
                 this.set_active_chat(chat.clone(), cx);
 
-                scroll_to_message_id.or_else(|| this.last_acknowledged_message_id)
+                scroll_to_message_id.or(this.last_acknowledged_message_id)
             })?;
 
             if let Some(message_id) = scroll_to_message_id {
@@ -1106,9 +1105,11 @@ impl Panel for ChatPanel {
     }
 
     fn set_position(&mut self, position: DockPosition, cx: &mut ViewContext<Self>) {
-        settings::update_settings_file::<ChatPanelSettings>(self.fs.clone(), cx, move |settings| {
-            settings.dock = Some(position)
-        });
+        settings::update_settings_file::<ChatPanelSettings>(
+            self.fs.clone(),
+            cx,
+            move |settings, _| settings.dock = Some(position),
+        );
     }
 
     fn size(&self, cx: &gpui::WindowContext) -> Pixels {

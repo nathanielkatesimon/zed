@@ -1,15 +1,13 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
+use collections::HashMap;
 use futures::StreamExt;
 use gpui::{AppContext, AsyncAppContext, Task};
-use http::github::latest_github_release;
+use http_client::github::latest_github_release;
 pub use language::*;
-use lazy_static::lazy_static;
 use lsp::LanguageServerBinary;
-use project::project_settings::{BinarySettings, ProjectSettings};
 use regex::Regex;
 use serde_json::json;
-use settings::Settings;
 use smol::{fs, process};
 use std::{
     any::Any,
@@ -20,7 +18,7 @@ use std::{
     str,
     sync::{
         atomic::{AtomicBool, Ordering::SeqCst},
-        Arc,
+        Arc, LazyLock,
     },
 };
 use task::{TaskTemplate, TaskTemplates, TaskVariables, VariableName};
@@ -34,20 +32,20 @@ fn server_binary_arguments() -> Vec<OsString> {
 pub struct GoLspAdapter;
 
 impl GoLspAdapter {
-    const SERVER_NAME: &'static str = "gopls";
+    const SERVER_NAME: LanguageServerName = LanguageServerName::new_static("gopls");
 }
 
-lazy_static! {
-    static ref GOPLS_VERSION_REGEX: Regex = Regex::new(r"\d+\.\d+\.\d+").unwrap();
-    static ref GO_EXTRACT_SUBTEST_NAME_REGEX: Regex =
-        Regex::new(r#".*t\.Run\("([^"]*)".*"#).unwrap();
-    static ref GO_ESCAPE_SUBTEST_NAME_REGEX: Regex = Regex::new(r#"[.*+?^${}()|\[\]\\]"#).unwrap();
-}
+static GOPLS_VERSION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d+\.\d+\.\d+").expect("Failed to create GOPLS_VERSION_REGEX"));
+
+static GO_ESCAPE_SUBTEST_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"[.*+?^${}()|\[\]\\]"#).expect("Failed to create GO_ESCAPE_SUBTEST_NAME_REGEX")
+});
 
 #[async_trait(?Send)]
 impl super::LspAdapter for GoLspAdapter {
     fn name(&self) -> LanguageServerName {
-        LanguageServerName(Self::SERVER_NAME.into())
+        Self::SERVER_NAME.clone()
     }
 
     async fn fetch_latest_server_version(
@@ -69,43 +67,14 @@ impl super::LspAdapter for GoLspAdapter {
     async fn check_if_user_installed(
         &self,
         delegate: &dyn LspAdapterDelegate,
-        cx: &AsyncAppContext,
+        _: &AsyncAppContext,
     ) -> Option<LanguageServerBinary> {
-        let configured_binary = cx.update(|cx| {
-            ProjectSettings::get_global(cx)
-                .lsp
-                .get(Self::SERVER_NAME)
-                .and_then(|s| s.binary.clone())
-        });
-
-        match configured_binary {
-            Ok(Some(BinarySettings {
-                path: Some(path),
-                arguments,
-                ..
-            })) => Some(LanguageServerBinary {
-                path: path.into(),
-                arguments: arguments
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|arg| arg.into())
-                    .collect(),
-                env: None,
-            }),
-            Ok(Some(BinarySettings {
-                path_lookup: Some(false),
-                ..
-            })) => None,
-            _ => {
-                let env = delegate.shell_env().await;
-                let path = delegate.which(Self::SERVER_NAME.as_ref()).await?;
-                Some(LanguageServerBinary {
-                    path,
-                    arguments: server_binary_arguments(),
-                    env: Some(env),
-                })
-            }
-        }
+        let path = delegate.which(Self::SERVER_NAME.as_ref()).await?;
+        Some(LanguageServerBinary {
+            path,
+            arguments: server_binary_arguments(),
+            env: None,
+        })
     }
 
     fn will_fetch_server(
@@ -146,7 +115,7 @@ impl super::LspAdapter for GoLspAdapter {
         let this = *self;
 
         if let Some(version) = *version {
-            let binary_path = container_dir.join(&format!("gopls_{version}"));
+            let binary_path = container_dir.join(format!("gopls_{version}"));
             if let Ok(metadata) = fs::metadata(&binary_path).await {
                 if metadata.is_file() {
                     remove_matching(&container_dir, |entry| {
@@ -199,7 +168,7 @@ impl super::LspAdapter for GoLspAdapter {
             .find(version_stdout)
             .with_context(|| format!("failed to parse golps version output '{version_stdout}'"))?
             .as_str();
-        let binary_path = container_dir.join(&format!("gopls_{version}"));
+        let binary_path = container_dir.join(format!("gopls_{version}"));
         fs::rename(&installed_binary_path, &binary_path).await?;
 
         Ok(LanguageServerBinary {
@@ -215,18 +184,6 @@ impl super::LspAdapter for GoLspAdapter {
         _: &dyn LspAdapterDelegate,
     ) -> Option<LanguageServerBinary> {
         get_cached_server_binary(container_dir).await
-    }
-
-    async fn installation_test_binary(
-        &self,
-        container_dir: PathBuf,
-    ) -> Option<LanguageServerBinary> {
-        get_cached_server_binary(container_dir)
-            .await
-            .map(|mut binary| {
-                binary.arguments = vec!["--help".into()];
-                binary
-            })
     }
 
     async fn initialization_options(
@@ -451,6 +408,8 @@ fn adjust_runs(
 pub(crate) struct GoContextProvider;
 
 const GO_PACKAGE_TASK_VARIABLE: VariableName = VariableName::Custom(Cow::Borrowed("GO_PACKAGE"));
+const GO_MODULE_ROOT_TASK_VARIABLE: VariableName =
+    VariableName::Custom(Cow::Borrowed("GO_MODULE_ROOT"));
 const GO_SUBTEST_NAME_TASK_VARIABLE: VariableName =
     VariableName::Custom(Cow::Borrowed("GO_SUBTEST_NAME"));
 
@@ -459,6 +418,7 @@ impl ContextProvider for GoContextProvider {
         &self,
         variables: &TaskVariables,
         location: &Location,
+        _: Option<&HashMap<String, String>>,
         cx: &mut gpui::AppContext,
     ) -> Result<TaskVariables> {
         let local_abs_path = location
@@ -489,15 +449,33 @@ impl ContextProvider for GoContextProvider {
                 (GO_PACKAGE_TASK_VARIABLE.clone(), package_name.to_string())
             });
 
+        let go_module_root_variable = local_abs_path
+            .as_deref()
+            .and_then(|local_abs_path| local_abs_path.parent())
+            .map(|buffer_dir| {
+                // Walk dirtree up until getting the first go.mod file
+                let module_dir = buffer_dir
+                    .ancestors()
+                    .find(|dir| dir.join("go.mod").is_file())
+                    .map(|dir| dir.to_string_lossy().to_string())
+                    .unwrap_or_else(|| ".".to_string());
+
+                (GO_MODULE_ROOT_TASK_VARIABLE.clone(), module_dir)
+            });
+
         let _subtest_name = variables.get(&VariableName::Custom(Cow::Borrowed("_subtest_name")));
 
         let go_subtest_variable = extract_subtest_name(_subtest_name.unwrap_or(""))
             .map(|subtest_name| (GO_SUBTEST_NAME_TASK_VARIABLE.clone(), subtest_name));
 
         Ok(TaskVariables::from_iter(
-            [go_package_variable, go_subtest_variable]
-                .into_iter()
-                .flatten(),
+            [
+                go_package_variable,
+                go_subtest_variable,
+                go_module_root_variable,
+            ]
+            .into_iter()
+            .flatten(),
         ))
     }
 
@@ -506,6 +484,13 @@ impl ContextProvider for GoContextProvider {
         _: Option<Arc<dyn language::File>>,
         _: &AppContext,
     ) -> Option<TaskTemplates> {
+        let package_cwd = if GO_PACKAGE_TASK_VARIABLE.template_value() == "." {
+            None
+        } else {
+            Some("$ZED_DIRNAME".to_string())
+        };
+        let module_cwd = Some(GO_MODULE_ROOT_TASK_VARIABLE.template_value());
+
         Some(TaskTemplates(vec![
             TaskTemplate {
                 label: format!(
@@ -516,28 +501,30 @@ impl ContextProvider for GoContextProvider {
                 command: "go".into(),
                 args: vec![
                     "test".into(),
-                    GO_PACKAGE_TASK_VARIABLE.template_value(),
                     "-run".into(),
-                    format!("'^{}$'", VariableName::Symbol.template_value(),),
+                    format!("^{}\\$", VariableName::Symbol.template_value(),),
                 ],
                 tags: vec!["go-test".to_owned()],
+                cwd: package_cwd.clone(),
                 ..TaskTemplate::default()
             },
             TaskTemplate {
                 label: format!("go test {}", GO_PACKAGE_TASK_VARIABLE.template_value()),
                 command: "go".into(),
-                args: vec!["test".into(), GO_PACKAGE_TASK_VARIABLE.template_value()],
+                args: vec!["test".into()],
+                cwd: package_cwd.clone(),
                 ..TaskTemplate::default()
             },
             TaskTemplate {
                 label: "go test ./...".into(),
                 command: "go".into(),
                 args: vec!["test".into(), "./...".into()],
+                cwd: module_cwd.clone(),
                 ..TaskTemplate::default()
             },
             TaskTemplate {
                 label: format!(
-                    "go test {} -run {}/{}",
+                    "go test {} -v -run {}/{}",
                     GO_PACKAGE_TASK_VARIABLE.template_value(),
                     VariableName::Symbol.template_value(),
                     GO_SUBTEST_NAME_TASK_VARIABLE.template_value(),
@@ -545,15 +532,15 @@ impl ContextProvider for GoContextProvider {
                 command: "go".into(),
                 args: vec![
                     "test".into(),
-                    GO_PACKAGE_TASK_VARIABLE.template_value(),
                     "-v".into(),
                     "-run".into(),
                     format!(
-                        "'^{}$/^{}$'",
+                        "^{}\\$/^{}\\$",
                         VariableName::Symbol.template_value(),
                         GO_SUBTEST_NAME_TASK_VARIABLE.template_value(),
                     ),
                 ],
+                cwd: package_cwd.clone(),
                 tags: vec!["go-subtest".to_owned()],
                 ..TaskTemplate::default()
             },
@@ -566,20 +553,36 @@ impl ContextProvider for GoContextProvider {
                 command: "go".into(),
                 args: vec![
                     "test".into(),
-                    GO_PACKAGE_TASK_VARIABLE.template_value(),
                     "-benchmem".into(),
                     "-run=^$".into(),
                     "-bench".into(),
-                    format!("'^{}$'", VariableName::Symbol.template_value()),
+                    format!("^{}\\$", VariableName::Symbol.template_value()),
                 ],
+                cwd: package_cwd.clone(),
                 tags: vec!["go-benchmark".to_owned()],
                 ..TaskTemplate::default()
             },
             TaskTemplate {
                 label: format!("go run {}", GO_PACKAGE_TASK_VARIABLE.template_value(),),
                 command: "go".into(),
-                args: vec!["run".into(), GO_PACKAGE_TASK_VARIABLE.template_value()],
+                args: vec!["run".into(), ".".into()],
+                cwd: package_cwd.clone(),
                 tags: vec!["go-main".to_owned()],
+                ..TaskTemplate::default()
+            },
+            TaskTemplate {
+                label: format!("go generate {}", GO_PACKAGE_TASK_VARIABLE.template_value()),
+                command: "go".into(),
+                args: vec!["generate".into()],
+                cwd: package_cwd.clone(),
+                tags: vec!["go-generate".to_owned()],
+                ..TaskTemplate::default()
+            },
+            TaskTemplate {
+                label: "go generate ./...".into(),
+                command: "go".into(),
+                args: vec!["generate".into(), "./...".into()],
+                cwd: module_cwd.clone(),
                 ..TaskTemplate::default()
             },
         ]))
@@ -608,7 +611,7 @@ mod tests {
     #[gpui::test]
     async fn test_go_label_for_completion() {
         let adapter = Arc::new(GoLspAdapter);
-        let language = language("go", tree_sitter_go::language());
+        let language = language("go", tree_sitter_go::LANGUAGE.into());
 
         let theme = SyntaxTheme::new_test([
             ("type", Hsla::default()),

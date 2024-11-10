@@ -103,20 +103,33 @@ impl TabMap {
                 }
             }
 
+            let _old_alloc_ptr = fold_edits.as_ptr();
             // Combine any edits that overlap due to the expansion.
-            let mut ix = 1;
-            while ix < fold_edits.len() {
-                let (prev_edits, next_edits) = fold_edits.split_at_mut(ix);
-                let prev_edit = prev_edits.last_mut().unwrap();
-                let edit = &next_edits[0];
-                if prev_edit.old.end >= edit.old.start {
-                    prev_edit.old.end = edit.old.end;
-                    prev_edit.new.end = edit.new.end;
-                    fold_edits.remove(ix);
-                } else {
-                    ix += 1;
-                }
-            }
+            let mut fold_edits = fold_edits.into_iter();
+            let fold_edits = if let Some(mut first_edit) = fold_edits.next() {
+                // This code relies on reusing allocations from the Vec<_> - at the time of writing .flatten() prevents them.
+                #[allow(clippy::filter_map_identity)]
+                let mut v: Vec<_> = fold_edits
+                    .scan(&mut first_edit, |state, edit| {
+                        if state.old.end >= edit.old.start {
+                            state.old.end = edit.old.end;
+                            state.new.end = edit.new.end;
+                            Some(None) // Skip this edit, it's merged
+                        } else {
+                            let new_state = edit.clone();
+                            let result = Some(Some(state.clone())); // Yield the previous edit
+                            **state = new_state;
+                            result
+                        }
+                    })
+                    .filter_map(|x| x)
+                    .collect();
+                v.push(first_edit);
+                debug_assert_eq!(v.as_ptr(), _old_alloc_ptr, "Fold edits were reallocated");
+                v
+            } else {
+                vec![]
+            };
 
             for fold_edit in fold_edits {
                 let old_start = fold_edit.old.start.to_point(&old_snapshot.fold_snapshot);
@@ -238,6 +251,7 @@ impl TabSnapshot {
         };
 
         TabChunks {
+            snapshot: self,
             fold_chunks: self.fold_snapshot.chunks(
                 input_start..input_end,
                 language_aware,
@@ -472,6 +486,7 @@ impl<'a> std::ops::AddAssign<&'a Self> for TextSummary {
 const SPACES: &str = "                ";
 
 pub struct TabChunks<'a> {
+    snapshot: &'a TabSnapshot,
     fold_chunks: FoldChunks<'a>,
     chunk: Chunk<'a>,
     column: u32,
@@ -481,6 +496,37 @@ pub struct TabChunks<'a> {
     max_output_position: Point,
     tab_size: NonZeroU32,
     inside_leading_tab: bool,
+}
+
+impl<'a> TabChunks<'a> {
+    pub(crate) fn seek(&mut self, range: Range<TabPoint>) {
+        let (input_start, expanded_char_column, to_next_stop) =
+            self.snapshot.to_fold_point(range.start, Bias::Left);
+        let input_column = input_start.column();
+        let input_start = input_start.to_offset(&self.snapshot.fold_snapshot);
+        let input_end = self
+            .snapshot
+            .to_fold_point(range.end, Bias::Right)
+            .0
+            .to_offset(&self.snapshot.fold_snapshot);
+        let to_next_stop = if range.start.0 + Point::new(0, to_next_stop) > range.end.0 {
+            range.end.column() - range.start.column()
+        } else {
+            to_next_stop
+        };
+
+        self.fold_chunks.seek(input_start..input_end);
+        self.input_column = input_column;
+        self.column = expanded_char_column;
+        self.output_position = range.start.0;
+        self.max_output_position = range.end.0;
+        self.chunk = Chunk {
+            text: &SPACES[0..(to_next_stop as usize)],
+            is_tab: true,
+            ..Default::default()
+        };
+        self.inside_leading_tab = to_next_stop > 0;
+    }
 }
 
 impl<'a> Iterator for TabChunks<'a> {
@@ -641,7 +687,7 @@ mod tests {
     fn test_marking_tabs(cx: &mut gpui::AppContext) {
         let input = "\t \thello";
 
-        let buffer = MultiBuffer::build_simple(&input, cx);
+        let buffer = MultiBuffer::build_simple(input, cx);
         let buffer_snapshot = buffer.read(cx).snapshot(cx);
         let (_, inlay_snapshot) = InlayMap::new(buffer_snapshot.clone());
         let (_, fold_snapshot) = FoldMap::new(inlay_snapshot);

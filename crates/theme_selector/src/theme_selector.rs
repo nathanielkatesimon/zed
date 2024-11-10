@@ -1,5 +1,4 @@
 use client::telemetry::Telemetry;
-use feature_flags::FeatureFlagAppExt;
 use fs::Fs;
 use fuzzy::{match_strings, StringMatch, StringMatchCandidate};
 use gpui::{
@@ -10,9 +9,7 @@ use picker::{Picker, PickerDelegate};
 use serde::Deserialize;
 use settings::{update_settings_file, SettingsStore};
 use std::sync::Arc;
-use theme::{
-    Appearance, Theme, ThemeMeta, ThemeMode, ThemeRegistry, ThemeSelection, ThemeSettings,
-};
+use theme::{Appearance, Theme, ThemeMeta, ThemeRegistry, ThemeSettings};
 use ui::{prelude::*, v_flex, ListItem, ListItemSpacing};
 use util::ResultExt;
 use workspace::{ui::HighlightedLabel, ModalView, Workspace};
@@ -98,10 +95,9 @@ impl ThemeSelectorDelegate {
     ) -> Self {
         let original_theme = cx.theme().clone();
 
-        let staff_mode = cx.is_staff();
         let registry = ThemeRegistry::global(cx);
         let mut themes = registry
-            .list(staff_mode)
+            .list()
             .into_iter()
             .filter(|meta| {
                 if let Some(theme_filter) = themes_filter {
@@ -196,24 +192,8 @@ impl PickerDelegate for ThemeSelectorDelegate {
 
         let appearance = Appearance::from(cx.appearance());
 
-        update_settings_file::<ThemeSettings>(self.fs.clone(), cx, move |settings| {
-            if let Some(selection) = settings.theme.as_mut() {
-                let theme_to_update = match selection {
-                    ThemeSelection::Static(theme) => theme,
-                    ThemeSelection::Dynamic { mode, light, dark } => match mode {
-                        ThemeMode::Light => light,
-                        ThemeMode::Dark => dark,
-                        ThemeMode::System => match appearance {
-                            Appearance::Light => light,
-                            Appearance::Dark => dark,
-                        },
-                    },
-                };
-
-                *theme_to_update = theme_name.to_string();
-            } else {
-                settings.theme = Some(ThemeSelection::Static(theme_name.to_string()));
-            }
+        update_settings_file::<ThemeSettings>(self.fs.clone(), cx, move |settings, _| {
+            settings.set_theme(theme_name.to_string(), appearance);
         });
 
         self.view

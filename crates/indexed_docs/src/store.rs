@@ -21,12 +21,6 @@ use crate::IndexedDocsRegistry;
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Deref, Display)]
 pub struct ProviderId(pub Arc<str>);
 
-impl ProviderId {
-    pub fn rustdoc() -> Self {
-        Self("rustdoc".into())
-    }
-}
-
 /// The name of a package.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Deref, Display)]
 pub struct PackageName(Arc<str>);
@@ -44,6 +38,13 @@ pub trait IndexedDocsProvider {
 
     /// Returns the path to the database for this provider.
     fn database_path(&self) -> PathBuf;
+
+    /// Returns a list of packages as suggestions to be included in the search
+    /// results.
+    ///
+    /// This can be used to provide completions for known packages (e.g., from the
+    /// local project or a registry) before a package has been indexed.
+    async fn suggest_packages(&self) -> Result<Vec<PackageName>>;
 
     /// Indexes the package with the given name.
     async fn index(&self, package: PackageName, database: Arc<IndexedDocsDatabase>) -> Result<()>;
@@ -107,6 +108,31 @@ impl IndexedDocsStore {
             .map_err(|err| anyhow!(err))?
             .load(key)
             .await
+    }
+
+    pub async fn load_many_by_prefix(&self, prefix: String) -> Result<Vec<(String, MarkdownDocs)>> {
+        self.database_future
+            .clone()
+            .await
+            .map_err(|err| anyhow!(err))?
+            .load_many_by_prefix(prefix)
+            .await
+    }
+
+    /// Returns whether any entries exist with the given prefix.
+    pub async fn any_with_prefix(&self, prefix: String) -> Result<bool> {
+        self.database_future
+            .clone()
+            .await
+            .map_err(|err| anyhow!(err))?
+            .any_with_prefix(prefix)
+            .await
+    }
+
+    pub fn suggest_packages(self: Arc<Self>) -> Task<Result<Vec<PackageName>>> {
+        let this = self.clone();
+        self.executor
+            .spawn(async move { this.provider.suggest_packages().await })
     }
 
     pub fn index(
@@ -263,7 +289,45 @@ impl IndexedDocsDatabase {
         })
     }
 
-    pub fn insert(&self, key: String, docs: String) -> Task<Result<()>> {
+    pub fn load_many_by_prefix(&self, prefix: String) -> Task<Result<Vec<(String, MarkdownDocs)>>> {
+        let env = self.env.clone();
+        let entries = self.entries;
+
+        self.executor.spawn(async move {
+            let txn = env.read_txn()?;
+            let results = entries
+                .iter(&txn)?
+                .filter_map(|entry| {
+                    let (key, value) = entry.ok()?;
+                    if key.starts_with(&prefix) {
+                        Some((key, value))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            Ok(results)
+        })
+    }
+
+    /// Returns whether any entries exist with the given prefix.
+    pub fn any_with_prefix(&self, prefix: String) -> Task<Result<bool>> {
+        let env = self.env.clone();
+        let entries = self.entries;
+
+        self.executor.spawn(async move {
+            let txn = env.read_txn()?;
+            let any = entries
+                .iter(&txn)?
+                .any(|entry| entry.map_or(false, |(key, _value)| key.starts_with(&prefix)));
+            Ok(any)
+        })
+    }
+}
+
+impl extension_host::DocsDatabase for IndexedDocsDatabase {
+    fn insert(&self, key: String, docs: String) -> Task<Result<()>> {
         let env = self.env.clone();
         let entries = self.entries;
 

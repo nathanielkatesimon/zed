@@ -5,17 +5,22 @@ edition = "2021"
 publish = false
 license = "GPL-3.0-or-later"
 
+[lints]
+workspace = true
+
 [lib]
 path = "src/tab_switcher.rs"
 doctest = false
 
 [dependencies]
 collections.workspace = true
+editor.workspace = true
 gpui.workspace = true
 menu.workspace = true
 picker.workspace = true
+project.workspace = true
 serde.workspace = true
-terminal_view.workspace = true
+settings.workspace = true
 ui.workspace = true
 util.workspace = true
 workspace.workspace = true
@@ -23,11 +28,9 @@ workspace.workspace = true
 [dev-dependencies]
 anyhow.workspace = true
 ctor.workspace = true
-editor.workspace = true
 env_logger.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 language = { workspace = true, features = ["test-support"] }
-project.workspace = true
 serde_json.workspace = true
 theme = { workspace = true, features = ["test-support"] }
 workspace = { workspace = true, features = ["test-support"] }

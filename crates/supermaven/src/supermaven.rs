@@ -9,7 +9,9 @@ use client::{proto, Client};
 use collections::BTreeMap;
 
 use futures::{channel::mpsc, io::BufReader, AsyncBufReadExt, StreamExt};
-use gpui::{AppContext, AsyncAppContext, EntityId, Global, Model, ModelContext, Task, WeakModel};
+use gpui::{
+    actions, AppContext, AsyncAppContext, EntityId, Global, Model, ModelContext, Task, WeakModel,
+};
 use language::{
     language_settings::all_language_settings, Anchor, Buffer, BufferSnapshot, ToOffset,
 };
@@ -24,6 +26,8 @@ use smol::{
 use std::{path::PathBuf, process::Stdio, sync::Arc};
 use ui::prelude::*;
 use util::ResultExt;
+
+actions!(supermaven, [SignOut]);
 
 pub fn init(client: Arc<Client>, cx: &mut AppContext) {
     let supermaven = cx.new_model(|_| Supermaven::Starting);
@@ -46,6 +50,12 @@ pub fn init(client: Arc<Client>, cx: &mut AppContext) {
         }
     })
     .detach();
+
+    cx.on_action(|_: &SignOut, cx| {
+        if let Some(supermaven) = Supermaven::global(cx) {
+            supermaven.update(cx, |supermaven, _cx| supermaven.sign_out());
+        }
+    });
 }
 
 pub enum Supermaven {
@@ -131,11 +141,20 @@ impl Supermaven {
                 SupermavenCompletionState {
                     buffer_id,
                     prefix_anchor: cursor_position,
+                    prefix_offset: offset,
                     text: String::new(),
                     dedent: String::new(),
                     updates_tx,
                 },
             );
+            // ensure the states map is max 1000 elements
+            if agent.states.len() > 1000 {
+                // state id is monotonic so it's sufficient to remove the first element
+                agent
+                    .states
+                    .remove(&agent.states.keys().next().unwrap().clone());
+            }
+
             let _ = agent
                 .outgoing_tx
                 .unbounded_send(OutboundMessage::StateUpdate(StateUpdateMessage {
@@ -175,6 +194,19 @@ impl Supermaven {
             None
         }
     }
+
+    pub fn sign_out(&mut self) {
+        if let Self::Spawned(agent) = self {
+            agent
+                .outgoing_tx
+                .unbounded_send(OutboundMessage::Logout)
+                .ok();
+            // The account status will get set to RequiresActivation or Ready when the next
+            // message from the agent comes in. Until that happens, set the status to Unknown
+            // to disable the button.
+            agent.account_status = AccountStatus::Unknown;
+        }
+    }
 }
 
 fn find_relevant_completion<'a>(
@@ -193,11 +225,11 @@ fn find_relevant_completion<'a>(
         };
 
         let current_cursor_offset = cursor_position.to_offset(buffer);
-        let original_cursor_offset = state.prefix_anchor.to_offset(buffer);
-        if current_cursor_offset < original_cursor_offset {
+        if current_cursor_offset < state.prefix_offset {
             continue;
         }
 
+        let original_cursor_offset = buffer.clip_offset(state.prefix_offset, text::Bias::Left);
         let text_inserted_since_completion_request =
             buffer.text_for_range(original_cursor_offset..current_cursor_offset);
         let mut trimmed_completion = state_completion;
@@ -237,14 +269,21 @@ impl SupermavenAgent {
         client: Arc<Client>,
         cx: &mut ModelContext<Supermaven>,
     ) -> Result<Self> {
-        let mut process = Command::new(&binary_path)
+        let mut process = Command::new(&binary_path);
+        process
             .arg("stdio")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .context("failed to start the binary")?;
+            .kill_on_drop(true);
+
+        #[cfg(target_os = "windows")]
+        {
+            use smol::process::windows::CommandExt;
+            process.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+        }
+
+        let mut process = process.spawn().context("failed to start the binary")?;
 
         let stdin = process
             .stdin
@@ -277,7 +316,7 @@ impl SupermavenAgent {
                         break;
                     }
                 }
-                return anyhow::Ok(());
+                anyhow::Ok(())
             }
         })
         .detach();
@@ -325,7 +364,7 @@ impl SupermavenAgent {
             let Some(line) = line.strip_prefix(MESSAGE_PREFIX) else {
                 continue;
             };
-            let Some(message) = serde_json::from_str::<SupermavenMessage>(&line)
+            let Some(message) = serde_json::from_str::<SupermavenMessage>(line)
                 .with_context(|| format!("failed to deserialize line from stdout: {:?}", line))
                 .log_err()
             else {
@@ -354,7 +393,11 @@ impl SupermavenAgent {
                     None => AccountStatus::Ready,
                 };
             }
+            SupermavenMessage::ActivationSuccess => {
+                self.account_status = AccountStatus::Ready;
+            }
             SupermavenMessage::ServiceTier { service_tier } => {
+                self.account_status = AccountStatus::Ready;
                 self.service_tier = Some(service_tier);
             }
             SupermavenMessage::Response(response) => {
@@ -385,6 +428,9 @@ pub struct SupermavenCompletionStateId(usize);
 pub struct SupermavenCompletionState {
     buffer_id: EntityId,
     prefix_anchor: Anchor,
+    // prefix_offset is tracked independently because the anchor biases left which
+    // doesn't allow us to determine if the prior text has been deleted.
+    prefix_offset: usize,
     text: String,
     dedent: String,
     updates_tx: watch::Sender<()>,

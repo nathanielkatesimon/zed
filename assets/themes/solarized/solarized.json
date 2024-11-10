@@ -1,4 +1,5 @@
 {
+  "$schema": "https://zed.dev/schema/themes/v0.1.0.json",
   "name": "Solarized",
   "author": "Zed Industries",
   "themes": [
@@ -38,6 +39,7 @@
         "icon.accent": "#278ad1ff",
         "status_bar.background": "#073743ff",
         "title_bar.background": "#073743ff",
+        "title_bar.inactive_background": "#04313bff",
         "toolbar.background": "#002a35ff",
         "tab_bar.background": "#04313bff",
         "tab.inactive_background": "#04313bff",
@@ -407,6 +409,7 @@
         "icon.accent": "#288bd1ff",
         "status_bar.background": "#cfd0c4ff",
         "title_bar.background": "#cfd0c4ff",
+        "title_bar.inactive_background": "#f3eddaff",
         "toolbar.background": "#fdf6e3ff",
         "tab_bar.background": "#f3eddaff",
         "tab.inactive_background": "#f3eddaff",
@@ -516,8 +519,8 @@
             "selection": "#d337813d"
           },
           {
-            "cursor": "#cb4b17ff",
-            "background": "#cb4b17ff",
+            "cursor": "#cb4b16ff",
+            "background": "#cb4b16ff",
             "selection": "#cb4b173d"
           },
           {
@@ -593,7 +596,7 @@
             "font_weight": 700
           },
           "enum": {
-            "color": "#cb4b17ff",
+            "color": "#cb4b16ff",
             "font_style": null,
             "font_weight": null
           },
@@ -618,7 +621,7 @@
             "font_weight": null
           },
           "link_text": {
-            "color": "#cb4b17ff",
+            "color": "#cb4b16ff",
             "font_style": "italic",
             "font_weight": null
           },
@@ -633,7 +636,7 @@
             "font_weight": null
           },
           "operator": {
-            "color": "#cb4b17ff",
+            "color": "#cb4b16ff",
             "font_style": null,
             "font_weight": null
           },
@@ -683,7 +686,7 @@
             "font_weight": null
           },
           "string": {
-            "color": "#cb4b17ff",
+            "color": "#cb4b16ff",
             "font_style": null,
             "font_weight": null
           },
@@ -693,17 +696,17 @@
             "font_weight": null
           },
           "string.regex": {
-            "color": "#cb4b17ff",
+            "color": "#cb4b16ff",
             "font_style": null,
             "font_weight": null
           },
           "string.special": {
-            "color": "#cb4b17ff",
+            "color": "#cb4b16ff",
             "font_style": null,
             "font_weight": null
           },
           "string.special.symbol": {
-            "color": "#cb4b17ff",
+            "color": "#cb4b16ff",
             "font_style": null,
             "font_weight": null
           },
@@ -713,7 +716,7 @@
             "font_weight": null
           },
           "text.literal": {
-            "color": "#cb4b17ff",
+            "color": "#cb4b16ff",
             "font_style": null,
             "font_weight": null
           },

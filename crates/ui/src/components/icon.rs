@@ -1,8 +1,14 @@
+#![allow(missing_docs)]
 use gpui::{svg, AnimationElement, Hsla, IntoElement, Rems, Transformation};
 use serde::{Deserialize, Serialize};
 use strum::{EnumIter, EnumString, IntoStaticStr};
+use ui_macros::DerivePathStr;
 
-use crate::{prelude::*, Indicator};
+use crate::{
+    prelude::*,
+    traits::component_preview::{ComponentExample, ComponentPreview},
+    Indicator,
+};
 
 #[derive(IntoElement)]
 pub enum AnyIcon {
@@ -45,7 +51,7 @@ impl RenderOnce for AnyIcon {
 /// The decoration for an icon.
 ///
 /// For example, this can show an indicator, an "x",
-/// or a diagonal strkethrough to indicate something is disabled.
+/// or a diagonal strikethrough to indicate something is disabled.
 #[derive(Debug, PartialEq, Copy, Clone, EnumIter)]
 pub enum IconDecoration {
     Strikethrough,
@@ -76,8 +82,12 @@ impl IconSize {
         }
     }
 
-    /// Returns the length of a side of the square that contains this [`IconSize`], with padding.
-    pub(crate) fn square(&self, cx: &mut WindowContext) -> Pixels {
+    /// Returns the individual components of the square that contains this [`IconSize`].
+    ///
+    /// The returned tuple contains:
+    ///   1. The length of one side of the square
+    ///   2. The padding of one side of the square
+    pub fn square_components(&self, cx: &mut WindowContext) -> (Pixels, Pixels) {
         let icon_size = self.rems() * cx.rem_size();
         let padding = match self {
             IconSize::Indicator => Spacing::None.px(cx),
@@ -86,15 +96,40 @@ impl IconSize {
             IconSize::Medium => Spacing::XSmall.px(cx),
         };
 
+        (icon_size, padding)
+    }
+
+    /// Returns the length of a side of the square that contains this [`IconSize`], with padding.
+    pub fn square(&self, cx: &mut WindowContext) -> Pixels {
+        let (icon_size, padding) = self.square_components(cx);
+
         icon_size + padding * 2.
     }
 }
 
 #[derive(
-    Debug, Eq, PartialEq, Copy, Clone, EnumIter, EnumString, IntoStaticStr, Serialize, Deserialize,
+    Debug,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    EnumIter,
+    EnumString,
+    IntoStaticStr,
+    Serialize,
+    Deserialize,
+    DerivePathStr,
 )]
+#[strum(serialize_all = "snake_case")]
+#[path_str(prefix = "icons", suffix = ".svg")]
 pub enum IconName {
     Ai,
+    AiAnthropic,
+    AiAnthropicHosted,
+    AiGoogle,
+    AiOllama,
+    AiOpenAi,
+    AiZed,
     ArrowCircle,
     ArrowDown,
     ArrowDownFromLine,
@@ -118,13 +153,13 @@ pub enum IconName {
     CaseSensitive,
     Check,
     ChevronDown,
+    ChevronDownSmall, // This chevron indicates a popover menu.
     ChevronLeft,
     ChevronRight,
     ChevronUp,
     ChevronUpDown,
     Close,
     Code,
-    Collab,
     Command,
     Context,
     Control,
@@ -134,23 +169,31 @@ pub enum IconName {
     CopilotInit,
     Copy,
     CountdownTimer,
+    CursorIBeam,
+    TextSnippet,
     Dash,
+    DatabaseZap,
     Delete,
+    Diff,
     Disconnected,
     Download,
     Ellipsis,
+    EllipsisVertical,
     Envelope,
     Escape,
-    ExclamationTriangle,
     Exit,
     ExpandVertical,
     ExternalLink,
+    Eye,
     File,
+    FileCode,
     FileDoc,
     FileGeneric,
     FileGit,
     FileLock,
     FileRust,
+    FileSearch,
+    FileText,
     FileToml,
     FileTree,
     Filter,
@@ -174,7 +217,7 @@ pub enum IconName {
     LineHeight,
     Link,
     ListTree,
-    MagicWand,
+    ListX,
     MagnifyingGlass,
     MailOpen,
     Maximize,
@@ -182,21 +225,22 @@ pub enum IconName {
     MessageBubbles,
     Mic,
     MicMute,
+    Microscope,
     Minimize,
     Option,
     PageDown,
     PageUp,
     Pencil,
     Person,
+    Pin,
     Play,
     Plus,
+    PocketKnife,
     Public,
     PullRequest,
     Quote,
+    RefreshTitle,
     Regex,
-    ReplPlay,
-    ReplOff,
-    ReplPause,
     ReplNeutral,
     Replace,
     ReplaceAll,
@@ -207,17 +251,24 @@ pub enum IconName {
     Reveal,
     RotateCcw,
     RotateCw,
+    Route,
     Save,
     Screen,
+    SearchCode,
     SearchSelection,
     SelectAll,
     Server,
     Settings,
+    SettingsAlt,
     Shift,
+    Slash,
+    SlashSquare,
     Sliders,
+    SlidersVertical,
     Snip,
     Space,
     Sparkle,
+    SparkleAlt,
     SparkleFilled,
     Spinner,
     Split,
@@ -231,11 +282,16 @@ pub enum IconName {
     SupermavenInit,
     Tab,
     Terminal,
-    TextCursor,
     Trash,
+    TrashAlt,
     TriangleRight,
+    Undo,
+    Unpin,
     Update,
+    UserGroup,
     Visible,
+    Wand,
+    Warning,
     WholeWord,
     XCircle,
     ZedAssistant,
@@ -243,157 +299,9 @@ pub enum IconName {
     ZedXCopilot,
 }
 
-impl IconName {
-    pub fn path(self) -> &'static str {
-        match self {
-            IconName::Ai => "icons/ai.svg",
-            IconName::ArrowCircle => "icons/arrow_circle.svg",
-            IconName::ArrowDown => "icons/arrow_down.svg",
-            IconName::ArrowDownFromLine => "icons/arrow_down_from_line.svg",
-            IconName::ArrowLeft => "icons/arrow_left.svg",
-            IconName::ArrowRight => "icons/arrow_right.svg",
-            IconName::ArrowUp => "icons/arrow_up.svg",
-            IconName::ArrowUpFromLine => "icons/arrow_up_from_line.svg",
-            IconName::ArrowUpRight => "icons/arrow_up_right.svg",
-            IconName::AtSign => "icons/at_sign.svg",
-            IconName::AudioOff => "icons/speaker_off.svg",
-            IconName::AudioOn => "icons/speaker_loud.svg",
-            IconName::Backspace => "icons/backspace.svg",
-            IconName::Bell => "icons/bell.svg",
-            IconName::BellDot => "icons/bell_dot.svg",
-            IconName::BellOff => "icons/bell_off.svg",
-            IconName::BellRing => "icons/bell_ring.svg",
-            IconName::Bolt => "icons/bolt.svg",
-            IconName::Book => "icons/book.svg",
-            IconName::BookCopy => "icons/book_copy.svg",
-            IconName::BookPlus => "icons/book_plus.svg",
-            IconName::CaseSensitive => "icons/case_insensitive.svg",
-            IconName::Check => "icons/check.svg",
-            IconName::ChevronDown => "icons/chevron_down.svg",
-            IconName::ChevronLeft => "icons/chevron_left.svg",
-            IconName::ChevronRight => "icons/chevron_right.svg",
-            IconName::ChevronUp => "icons/chevron_up.svg",
-            IconName::ChevronUpDown => "icons/chevron_up_down.svg",
-            IconName::Close => "icons/x.svg",
-            IconName::Code => "icons/code.svg",
-            IconName::Collab => "icons/user_group_16.svg",
-            IconName::Command => "icons/command.svg",
-            IconName::Context => "icons/context.svg",
-            IconName::Control => "icons/control.svg",
-            IconName::Copilot => "icons/copilot.svg",
-            IconName::CopilotDisabled => "icons/copilot_disabled.svg",
-            IconName::CopilotError => "icons/copilot_error.svg",
-            IconName::CopilotInit => "icons/copilot_init.svg",
-            IconName::Copy => "icons/copy.svg",
-            IconName::CountdownTimer => "icons/countdown_timer.svg",
-            IconName::Dash => "icons/dash.svg",
-            IconName::Delete => "icons/delete.svg",
-            IconName::Disconnected => "icons/disconnected.svg",
-            IconName::Download => "icons/download.svg",
-            IconName::Ellipsis => "icons/ellipsis.svg",
-            IconName::Envelope => "icons/feedback.svg",
-            IconName::Escape => "icons/escape.svg",
-            IconName::ExclamationTriangle => "icons/warning.svg",
-            IconName::Exit => "icons/exit.svg",
-            IconName::ExpandVertical => "icons/expand_vertical.svg",
-            IconName::ExternalLink => "icons/external_link.svg",
-            IconName::File => "icons/file.svg",
-            IconName::FileDoc => "icons/file_icons/book.svg",
-            IconName::FileGeneric => "icons/file_icons/file.svg",
-            IconName::FileGit => "icons/file_icons/git.svg",
-            IconName::FileLock => "icons/file_icons/lock.svg",
-            IconName::FileRust => "icons/file_icons/rust.svg",
-            IconName::FileToml => "icons/file_icons/toml.svg",
-            IconName::FileTree => "icons/project.svg",
-            IconName::Filter => "icons/filter.svg",
-            IconName::Folder => "icons/file_icons/folder.svg",
-            IconName::FolderOpen => "icons/file_icons/folder_open.svg",
-            IconName::FolderX => "icons/stop_sharing.svg",
-            IconName::Font => "icons/font.svg",
-            IconName::FontSize => "icons/font_size.svg",
-            IconName::FontWeight => "icons/font_weight.svg",
-            IconName::GenericClose => "icons/generic_close.svg",
-            IconName::GenericMaximize => "icons/generic_maximize.svg",
-            IconName::GenericMinimize => "icons/generic_minimize.svg",
-            IconName::GenericRestore => "icons/generic_restore.svg",
-            IconName::Github => "icons/github.svg",
-            IconName::Hash => "icons/hash.svg",
-            IconName::HistoryRerun => "icons/history_rerun.svg",
-            IconName::Indicator => "icons/indicator.svg",
-            IconName::IndicatorX => "icons/indicator_x.svg",
-            IconName::InlayHint => "icons/inlay_hint.svg",
-            IconName::Library => "icons/library.svg",
-            IconName::LineHeight => "icons/line_height.svg",
-            IconName::Link => "icons/link.svg",
-            IconName::ListTree => "icons/list_tree.svg",
-            IconName::MagicWand => "icons/magic_wand.svg",
-            IconName::MagnifyingGlass => "icons/magnifying_glass.svg",
-            IconName::MailOpen => "icons/mail_open.svg",
-            IconName::Maximize => "icons/maximize.svg",
-            IconName::Menu => "icons/menu.svg",
-            IconName::MessageBubbles => "icons/conversations.svg",
-            IconName::Mic => "icons/mic.svg",
-            IconName::MicMute => "icons/mic_mute.svg",
-            IconName::Minimize => "icons/minimize.svg",
-            IconName::Option => "icons/option.svg",
-            IconName::PageDown => "icons/page_down.svg",
-            IconName::PageUp => "icons/page_up.svg",
-            IconName::Pencil => "icons/pencil.svg",
-            IconName::Person => "icons/person.svg",
-            IconName::Play => "icons/play.svg",
-            IconName::Plus => "icons/plus.svg",
-            IconName::Public => "icons/public.svg",
-            IconName::PullRequest => "icons/pull_request.svg",
-            IconName::Quote => "icons/quote.svg",
-            IconName::Regex => "icons/regex.svg",
-            IconName::ReplPlay => "icons/repl_play.svg",
-            IconName::ReplPause => "icons/repl_pause.svg",
-            IconName::ReplNeutral => "icons/repl_neutral.svg",
-            IconName::ReplOff => "icons/repl_off.svg",
-            IconName::Replace => "icons/replace.svg",
-            IconName::ReplaceAll => "icons/replace_all.svg",
-            IconName::ReplaceNext => "icons/replace_next.svg",
-            IconName::ReplyArrowRight => "icons/reply_arrow_right.svg",
-            IconName::Rerun => "icons/rerun.svg",
-            IconName::Return => "icons/return.svg",
-            IconName::Reveal => "icons/reveal.svg",
-            IconName::RotateCcw => "icons/rotate_ccw.svg",
-            IconName::RotateCw => "icons/rotate_cw.svg",
-            IconName::Save => "icons/save.svg",
-            IconName::Screen => "icons/desktop.svg",
-            IconName::SearchSelection => "icons/search_selection.svg",
-            IconName::SelectAll => "icons/select_all.svg",
-            IconName::Server => "icons/server.svg",
-            IconName::Settings => "icons/file_icons/settings.svg",
-            IconName::Shift => "icons/shift.svg",
-            IconName::Sliders => "icons/sliders.svg",
-            IconName::Snip => "icons/snip.svg",
-            IconName::Space => "icons/space.svg",
-            IconName::Sparkle => "icons/sparkle.svg",
-            IconName::SparkleFilled => "icons/sparkle_filled.svg",
-            IconName::Spinner => "icons/spinner.svg",
-            IconName::Split => "icons/split.svg",
-            IconName::Star => "icons/star.svg",
-            IconName::StarFilled => "icons/star_filled.svg",
-            IconName::Stop => "icons/stop.svg",
-            IconName::Strikethrough => "icons/strikethrough.svg",
-            IconName::Supermaven => "icons/supermaven.svg",
-            IconName::SupermavenDisabled => "icons/supermaven_disabled.svg",
-            IconName::SupermavenError => "icons/supermaven_error.svg",
-            IconName::SupermavenInit => "icons/supermaven_init.svg",
-            IconName::Tab => "icons/tab.svg",
-            IconName::Terminal => "icons/terminal.svg",
-            IconName::TextCursor => "icons/text-cursor.svg",
-            IconName::Trash => "icons/trash.svg",
-            IconName::TriangleRight => "icons/triangle_right.svg",
-            IconName::Update => "icons/update.svg",
-            IconName::Visible => "icons/visible.svg",
-            IconName::WholeWord => "icons/word_search.svg",
-            IconName::XCircle => "icons/error.svg",
-            IconName::ZedAssistant => "icons/zed_assistant.svg",
-            IconName::ZedAssistantFilled => "icons/zed_assistant_filled.svg",
-            IconName::ZedXCopilot => "icons/zed_x_copilot.svg",
-        }
+impl From<IconName> for Icon {
+    fn from(icon: IconName) -> Self {
+        Icon::new(icon)
     }
 }
 
@@ -580,15 +488,37 @@ impl RenderOnce for IconWithIndicator {
                 this.child(
                     div()
                         .absolute()
-                        .w_2()
-                        .h_2()
-                        .border_1()
+                        .size_2p5()
+                        .border_2()
                         .border_color(indicator_border_color)
                         .rounded_full()
                         .bottom_neg_0p5()
-                        .right_neg_1()
+                        .right_neg_0p5()
                         .child(indicator),
                 )
             })
+    }
+}
+
+impl ComponentPreview for Icon {
+    fn examples() -> Vec<ComponentExampleGroup<Icon>> {
+        let arrow_icons = vec![
+            IconName::ArrowDown,
+            IconName::ArrowLeft,
+            IconName::ArrowRight,
+            IconName::ArrowUp,
+            IconName::ArrowCircle,
+        ];
+
+        vec![example_group_with_title(
+            "Arrow Icons",
+            arrow_icons
+                .into_iter()
+                .map(|icon| {
+                    let name = format!("{:?}", icon).to_string();
+                    ComponentExample::new(name, Icon::new(icon))
+                })
+                .collect(),
+        )]
     }
 }

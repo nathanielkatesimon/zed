@@ -33,22 +33,22 @@ main() {
             ;;
     esac
 
-    if which curl >/dev/null 2>&1; then
+    if command -v curl >/dev/null 2>&1; then
         curl () {
             command curl -fL "$@"
         }
-    elif which wget >/dev/null 2>&1; then
+    elif command -v wget >/dev/null 2>&1; then
         curl () {
-    	    wget -O- "$@"
+            wget -O- "$@"
         }
     else
-    	echo "Could not find 'curl' or 'wget' in your path"
-    	exit 1
+        echo "Could not find 'curl' or 'wget' in your path"
+        exit 1
     fi
 
     "$platform" "$@"
 
-    if [ "$(which "zed")" = "$HOME/.local/bin/zed" ]; then
+    if [ "$(command -v zed)" = "$HOME/.local/bin/zed" ]; then
         echo "Zed has been installed. Run with 'zed'"
     else
         echo "To run Zed from your terminal, you must add ~/.local/bin to your PATH"
@@ -58,6 +58,9 @@ main() {
             *zsh)
                 echo "   echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.zshrc"
                 echo "   source ~/.zshrc"
+                ;;
+            *fish)
+                echo "   fish_add_path -U $HOME/.local/bin"
                 ;;
             *)
                 echo "   echo 'export PATH=\$HOME/.local/bin:\$PATH' >> ~/.bashrc"

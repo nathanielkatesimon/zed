@@ -7,7 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use collections::HashMap;
 use futures::{channel::oneshot, io::BufWriter, select, AsyncRead, AsyncWrite, Future, FutureExt};
 use gpui::{AppContext, AsyncAppContext, BackgroundExecutor, Task};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use postage::{barrier, prelude::Stream};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, value::RawValue, Value};
@@ -24,6 +24,7 @@ use std::{
     ffi::OsString,
     fmt,
     io::Write,
+    ops::DerefMut,
     path::PathBuf,
     pin::Pin,
     sync::{
@@ -63,13 +64,22 @@ pub struct LanguageServerBinary {
     pub env: Option<HashMap<String, String>>,
 }
 
+/// Configures the search (and installation) of language servers.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LanguageServerBinaryOptions {
+    /// Whether the adapter should look at the users system
+    pub allow_path_lookup: bool,
+    /// Whether the adapter should download its own version
+    pub allow_binary_download: bool,
+}
+
 /// A running language server process.
 pub struct LanguageServer {
     server_id: LanguageServerId,
     next_id: AtomicI32,
     outbound_tx: channel::Sender<String>,
     name: Arc<str>,
-    capabilities: ServerCapabilities,
+    capabilities: RwLock<ServerCapabilities>,
     code_action_kinds: Option<Vec<CodeActionKind>>,
     notification_handlers: Arc<Mutex<HashMap<&'static str, NotificationHandler>>>,
     response_handlers: Arc<Mutex<Option<HashMap<RequestId, ResponseHandler>>>>,
@@ -87,6 +97,16 @@ pub struct LanguageServer {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct LanguageServerId(pub usize);
+
+impl LanguageServerId {
+    pub fn from_proto(id: u64) -> Self {
+        Self(id as usize)
+    }
+
+    pub fn to_proto(self) -> u64 {
+        self.0 as u64
+    }
+}
 
 /// Handle to a language server RPC activity subscription.
 pub enum Subscription {
@@ -208,6 +228,14 @@ impl<F: Future> LspRequestFuture<F::Output> for LspRequest<F> {
     }
 }
 
+/// Combined capabilities of the server and the adapter.
+pub struct AdapterServerCapabilities {
+    // Reported capabilities by the server
+    pub server_capabilities: ServerCapabilities,
+    // List of code actions supported by the LspAdapter matching the server
+    pub code_action_kinds: Option<Vec<CodeActionKind>>,
+}
+
 /// Experimental: Informs the end user about the state of the server
 ///
 /// [Rust Analyzer Specification](https://github.com/rust-lang/rust-analyzer/blob/master/docs/dev/lsp-extensions.md#server-status)
@@ -253,7 +281,7 @@ impl LanguageServer {
         };
 
         log::info!(
-            "starting language server. binary path: {:?}, working directory: {:?}, args: {:?}",
+            "starting language server process. binary path: {:?}, working directory: {:?}, args: {:?}",
             binary.path,
             working_dir,
             &binary.arguments
@@ -380,7 +408,7 @@ impl LanguageServer {
             notification_handlers,
             response_handlers,
             io_handlers,
-            name: "".into(),
+            name: Arc::default(),
             capabilities: Default::default(),
             code_action_kinds,
             next_id: Default::default(),
@@ -596,8 +624,11 @@ impl LanguageServer {
                             snippet_support: Some(true),
                             resolve_support: Some(CompletionItemCapabilityResolveSupport {
                                 properties: vec![
-                                    "documentation".to_string(),
                                     "additionalTextEdits".to_string(),
+                                    "command".to_string(),
+                                    "documentation".to_string(),
+                                    // NB: Do not have this resolved, otherwise Zed becomes slow to complete things
+                                    // "textEdit".to_string(),
                                 ],
                             }),
                             insert_replace_support: Some(true),
@@ -640,10 +671,13 @@ impl LanguageServer {
                         ..Default::default()
                     }),
                     formatting: Some(DynamicRegistrationClientCapabilities {
-                        dynamic_registration: None,
+                        dynamic_registration: Some(true),
+                    }),
+                    range_formatting: Some(DynamicRegistrationClientCapabilities {
+                        dynamic_registration: Some(true),
                     }),
                     on_type_formatting: Some(DynamicRegistrationClientCapabilities {
-                        dynamic_registration: None,
+                        dynamic_registration: Some(true),
                     }),
                     signature_help: Some(SignatureHelpClientCapabilities {
                         signature_information: Some(SignatureInformationSettings {
@@ -657,6 +691,10 @@ impl LanguageServer {
                             active_parameter_support: Some(true),
                         }),
                         ..SignatureHelpClientCapabilities::default()
+                    }),
+                    synchronization: Some(TextDocumentSyncClientCapabilities {
+                        did_save: Some(true),
+                        ..TextDocumentSyncClientCapabilities::default()
                     }),
                     ..TextDocumentClientCapabilities::default()
                 }),
@@ -689,7 +727,7 @@ impl LanguageServer {
             if let Some(info) = response.server_info {
                 self.name = info.name.into();
             }
-            self.capabilities = response.capabilities;
+            self.capabilities = RwLock::new(response.capabilities);
 
             self.notify::<notification::Initialized>(InitializedParams {})?;
             Ok(Arc::new(self))
@@ -904,8 +942,21 @@ impl LanguageServer {
     }
 
     /// Get the reported capabilities of the running language server.
-    pub fn capabilities(&self) -> &ServerCapabilities {
-        &self.capabilities
+    pub fn capabilities(&self) -> ServerCapabilities {
+        self.capabilities.read().clone()
+    }
+
+    /// Get the reported capabilities of the running language server and
+    /// what we know on the client/adapter-side of its capabilities.
+    pub fn adapter_server_capabilities(&self) -> AdapterServerCapabilities {
+        AdapterServerCapabilities {
+            server_capabilities: self.capabilities(),
+            code_action_kinds: self.code_action_kinds(),
+        }
+    }
+
+    pub fn update_capabilities(&self, update: impl FnOnce(&mut ServerCapabilities)) {
+        update(self.capabilities.write().deref_mut());
     }
 
     /// Get the id of the running language server.
@@ -1126,6 +1177,8 @@ impl FakeLanguageServer {
         let (stdout_writer, stdout_reader) = async_pipe::pipe();
         let (notifications_tx, notifications_rx) = channel::unbounded();
 
+        let root = Self::root_path();
+
         let mut server = LanguageServer::new_internal(
             server_id,
             stdin_writer,
@@ -1133,8 +1186,8 @@ impl FakeLanguageServer {
             None::<async_pipe::PipeReader>,
             Arc::new(Mutex::new(None)),
             None,
-            Path::new("/"),
-            Path::new("/"),
+            root,
+            root,
             None,
             cx.clone(),
             |_| {},
@@ -1150,8 +1203,8 @@ impl FakeLanguageServer {
                     None::<async_pipe::PipeReader>,
                     Arc::new(Mutex::new(None)),
                     None,
-                    Path::new("/"),
-                    Path::new("/"),
+                    root,
+                    root,
                     None,
                     cx,
                     move |msg| {
@@ -1186,6 +1239,16 @@ impl FakeLanguageServer {
         });
 
         (server, fake)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn root_path() -> &'static Path {
+        Path::new("C:\\")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn root_path() -> &'static Path {
+        Path::new("/")
     }
 }
 

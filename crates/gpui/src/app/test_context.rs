@@ -104,7 +104,7 @@ impl TestAppContext {
         let foreground_executor = ForegroundExecutor::new(arc_dispatcher);
         let platform = TestPlatform::new(background_executor.clone(), foreground_executor.clone());
         let asset_source = Arc::new(());
-        let http_client = http::FakeHttpClient::with_404_response();
+        let http_client = http_client::FakeHttpClient::with_404_response();
         let text_system = Arc::new(TextSystem::new(platform.text_system()));
 
         Self {
@@ -431,7 +431,7 @@ impl TestAppContext {
         rx
     }
 
-    /// Retuens a stream of events emitted by the given Model.
+    /// Returns a stream of events emitted by the given Model.
     pub fn events<Evt, T: 'static + EventEmitter<Evt>>(
         &mut self,
         entity: &Model<T>,
@@ -477,6 +477,12 @@ impl TestAppContext {
         .race(timer.map(|_| Err(anyhow!("condition timed out"))))
         .await
         .unwrap();
+    }
+
+    /// Set a name for this App.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_name(&mut self, name: &'static str) {
+        self.update(|cx| cx.name = Some(name))
     }
 }
 

@@ -3,7 +3,7 @@ use crate::Editor;
 use gpui::{Task as AsyncTask, WindowContext};
 use project::Location;
 use task::{TaskContext, TaskVariables, VariableName};
-use text::{Point, ToOffset, ToPoint};
+use text::{ToOffset, ToPoint};
 use workspace::Workspace;
 
 fn task_context_with_editor(
@@ -14,11 +14,7 @@ fn task_context_with_editor(
         return AsyncTask::ready(None);
     };
     let (selection, buffer, editor_snapshot) = {
-        let mut selection = editor.selections.newest::<Point>(cx);
-        if editor.selections.line_mode {
-            selection.start = Point::new(selection.start.row, 0);
-            selection.end = Point::new(selection.end.row + 1, 0);
-        }
+        let selection = editor.selections.newest_adjusted(cx);
         let Some((buffer, _, _)) = editor
             .buffer()
             .read(cx)
@@ -71,10 +67,11 @@ fn task_context_with_editor(
         variables
     };
 
-    let context_task = project.update(cx, |project, cx| {
-        project.task_context_for_location(captured_variables, location.clone(), cx)
-    });
-    cx.spawn(|_| context_task)
+    project.update(cx, |project, cx| {
+        project.task_store().update(cx, |task_store, cx| {
+            task_store.task_context_for_location(captured_variables, location, cx)
+        })
+    })
 }
 
 pub fn task_context(workspace: &Workspace, cx: &mut WindowContext<'_>) -> AsyncTask<TaskContext> {

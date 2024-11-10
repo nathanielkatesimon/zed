@@ -1,136 +1,132 @@
+use std::path::PathBuf;
+
+use anyhow::Context as _;
 use gpui::{
-    canvas, div, fill, img, opaque_grey, point, size, AnyElement, AppContext, Bounds, Context,
-    EventEmitter, FocusHandle, FocusableView, Img, InteractiveElement, IntoElement, Model,
-    ObjectFit, ParentElement, Render, Styled, Task, View, ViewContext, VisualContext, WeakView,
-    WindowContext,
+    canvas, div, fill, img, opaque_grey, point, size, AnyElement, AppContext, Bounds, EventEmitter,
+    FocusHandle, FocusableView, InteractiveElement, IntoElement, Model, ObjectFit, ParentElement,
+    Render, Styled, Task, View, ViewContext, VisualContext, WeakView, WindowContext,
 };
 use persistence::IMAGE_VIEWER;
+use theme::Theme;
 use ui::prelude::*;
 
-use project::{Project, ProjectEntryId, ProjectPath};
-use std::{ffi::OsStr, path::PathBuf};
-use util::ResultExt;
+use file_icons::FileIcons;
+use project::{image_store::ImageItemEvent, ImageItem, Project, ProjectPath};
+use settings::Settings;
+use util::paths::PathExt;
 use workspace::{
-    item::{Item, ProjectItem, TabContentParams},
-    ItemId, Pane, Workspace, WorkspaceId,
+    item::{BreadcrumbText, Item, ProjectItem, SerializableItem, TabContentParams},
+    ItemId, ItemSettings, Pane, ToolbarItemLocation, Workspace, WorkspaceId,
 };
 
 const IMAGE_VIEWER_KIND: &str = "ImageView";
 
-pub struct ImageItem {
-    path: PathBuf,
-    project_path: ProjectPath,
-}
-
-impl project::Item for ImageItem {
-    fn try_open(
-        project: &Model<Project>,
-        path: &ProjectPath,
-        cx: &mut AppContext,
-    ) -> Option<Task<gpui::Result<Model<Self>>>> {
-        let path = path.clone();
-        let project = project.clone();
-
-        let ext = path
-            .path
-            .extension()
-            .and_then(OsStr::to_str)
-            .unwrap_or_default();
-
-        // Only open the item if it's a binary image (no SVGs, etc.)
-        // Since we do not have a way to toggle to an editor
-        if Img::extensions().contains(&ext) && !ext.contains("svg") {
-            Some(cx.spawn(|mut cx| async move {
-                let abs_path = project
-                    .read_with(&cx, |project, cx| project.absolute_path(&path, cx))?
-                    .ok_or_else(|| anyhow::anyhow!("Failed to find the absolute path"))?;
-
-                cx.new_model(|_| ImageItem {
-                    path: abs_path,
-                    project_path: path,
-                })
-            }))
-        } else {
-            None
-        }
-    }
-
-    fn entry_id(&self, _: &AppContext) -> Option<ProjectEntryId> {
-        None
-    }
-
-    fn project_path(&self, _: &AppContext) -> Option<ProjectPath> {
-        Some(self.project_path.clone())
-    }
-}
-
 pub struct ImageView {
-    path: PathBuf,
+    image_item: Model<ImageItem>,
+    project: Model<Project>,
     focus_handle: FocusHandle,
 }
 
-impl Item for ImageView {
-    type Event = ();
+impl ImageView {
+    pub fn new(
+        image_item: Model<ImageItem>,
+        project: Model<Project>,
+        cx: &mut ViewContext<Self>,
+    ) -> Self {
+        cx.subscribe(&image_item, Self::on_image_event).detach();
+        Self {
+            image_item,
+            project,
+            focus_handle: cx.focus_handle(),
+        }
+    }
 
-    fn tab_content(&self, params: TabContentParams, _cx: &WindowContext) -> AnyElement {
-        let title = self
-            .path
+    fn on_image_event(
+        &mut self,
+        _: Model<ImageItem>,
+        event: &ImageItemEvent,
+        cx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            ImageItemEvent::FileHandleChanged | ImageItemEvent::Reloaded => {
+                cx.emit(ImageViewEvent::TitleChanged);
+                cx.notify();
+            }
+            ImageItemEvent::ReloadNeeded => {}
+        }
+    }
+}
+
+pub enum ImageViewEvent {
+    TitleChanged,
+}
+
+impl EventEmitter<ImageViewEvent> for ImageView {}
+
+impl Item for ImageView {
+    type Event = ImageViewEvent;
+
+    fn to_item_events(event: &Self::Event, mut f: impl FnMut(workspace::item::ItemEvent)) {
+        match event {
+            ImageViewEvent::TitleChanged => {
+                f(workspace::item::ItemEvent::UpdateTab);
+                f(workspace::item::ItemEvent::UpdateBreadcrumbs);
+            }
+        }
+    }
+
+    fn for_each_project_item(
+        &self,
+        cx: &AppContext,
+        f: &mut dyn FnMut(gpui::EntityId, &dyn project::Item),
+    ) {
+        f(self.image_item.entity_id(), self.image_item.read(cx))
+    }
+
+    fn is_singleton(&self, _cx: &AppContext) -> bool {
+        true
+    }
+
+    fn tab_tooltip_text(&self, cx: &AppContext) -> Option<SharedString> {
+        let abs_path = self.image_item.read(cx).file.as_local()?.abs_path(cx);
+        let file_path = abs_path.compact().to_string_lossy().to_string();
+        Some(file_path.into())
+    }
+
+    fn tab_content(&self, params: TabContentParams, cx: &WindowContext) -> AnyElement {
+        let path = self.image_item.read(cx).file.path();
+        let title = path
             .file_name()
-            .unwrap_or_else(|| self.path.as_os_str())
+            .unwrap_or_else(|| path.as_os_str())
             .to_string_lossy()
             .to_string();
         Label::new(title)
             .single_line()
-            .color(if params.selected {
-                Color::Default
-            } else {
-                Color::Muted
-            })
+            .color(params.text_color())
             .italic(params.preview)
             .into_any_element()
     }
 
-    fn added_to_workspace(&mut self, workspace: &mut Workspace, cx: &mut ViewContext<Self>) {
-        let item_id = cx.entity_id().as_u64();
-        let workspace_id = workspace.database_id();
-        let image_path = self.path.clone();
-
-        if let Some(workspace_id) = workspace_id {
-            cx.background_executor()
-                .spawn({
-                    let image_path = image_path.clone();
-                    async move {
-                        IMAGE_VIEWER
-                            .save_image_path(item_id, workspace_id, image_path)
-                            .await
-                            .log_err();
-                    }
-                })
-                .detach();
-        }
+    fn tab_icon(&self, cx: &WindowContext) -> Option<Icon> {
+        let path = self.image_item.read(cx).path();
+        ItemSettings::get_global(cx)
+            .file_icons
+            .then(|| FileIcons::get_icon(path, cx))
+            .flatten()
+            .map(Icon::from_path)
     }
 
-    fn serialized_item_kind() -> Option<&'static str> {
-        Some(IMAGE_VIEWER_KIND)
+    fn breadcrumb_location(&self) -> ToolbarItemLocation {
+        ToolbarItemLocation::PrimaryLeft
     }
 
-    fn deserialize(
-        _project: Model<Project>,
-        _workspace: WeakView<Workspace>,
-        workspace_id: WorkspaceId,
-        item_id: ItemId,
-        cx: &mut ViewContext<Pane>,
-    ) -> Task<anyhow::Result<View<Self>>> {
-        cx.spawn(|_pane, mut cx| async move {
-            let image_path = IMAGE_VIEWER
-                .get_image_path(item_id, workspace_id)?
-                .ok_or_else(|| anyhow::anyhow!("No image path found"))?;
-
-            cx.new_view(|cx| ImageView {
-                path: image_path,
-                focus_handle: cx.focus_handle(),
-            })
-        })
+    fn breadcrumbs(&self, _theme: &Theme, cx: &AppContext) -> Option<Vec<BreadcrumbText>> {
+        let text = breadcrumbs_text_for_image(self.project.read(cx), self.image_item.read(cx), cx);
+        Some(vec![BreadcrumbText {
+            text,
+            highlights: None,
+            font: None,
+        }])
     }
 
     fn clone_on_split(
@@ -142,9 +138,97 @@ impl Item for ImageView {
         Self: Sized,
     {
         Some(cx.new_view(|cx| Self {
-            path: self.path.clone(),
+            image_item: self.image_item.clone(),
+            project: self.project.clone(),
             focus_handle: cx.focus_handle(),
         }))
+    }
+}
+
+fn breadcrumbs_text_for_image(project: &Project, image: &ImageItem, cx: &AppContext) -> String {
+    let path = image.path();
+    if project.visible_worktrees(cx).count() <= 1 {
+        return path.to_string_lossy().to_string();
+    }
+
+    project
+        .worktree_for_id(image.project_path(cx).worktree_id, cx)
+        .map(|worktree| {
+            PathBuf::from(worktree.read(cx).root_name())
+                .join(path)
+                .to_string_lossy()
+                .to_string()
+        })
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+
+impl SerializableItem for ImageView {
+    fn serialized_item_kind() -> &'static str {
+        IMAGE_VIEWER_KIND
+    }
+
+    fn deserialize(
+        project: Model<Project>,
+        _workspace: WeakView<Workspace>,
+        workspace_id: WorkspaceId,
+        item_id: ItemId,
+        cx: &mut ViewContext<Pane>,
+    ) -> Task<gpui::Result<View<Self>>> {
+        cx.spawn(|_pane, mut cx| async move {
+            let image_path = IMAGE_VIEWER
+                .get_image_path(item_id, workspace_id)?
+                .ok_or_else(|| anyhow::anyhow!("No image path found"))?;
+
+            let (worktree, relative_path) = project
+                .update(&mut cx, |project, cx| {
+                    project.find_or_create_worktree(image_path.clone(), false, cx)
+                })?
+                .await
+                .context("Path not found")?;
+            let worktree_id = worktree.update(&mut cx, |worktree, _cx| worktree.id())?;
+
+            let project_path = ProjectPath {
+                worktree_id,
+                path: relative_path.into(),
+            };
+
+            let image_item = project
+                .update(&mut cx, |project, cx| project.open_image(project_path, cx))?
+                .await?;
+
+            cx.update(|cx| Ok(cx.new_view(|cx| ImageView::new(image_item, project, cx))))?
+        })
+    }
+
+    fn cleanup(
+        workspace_id: WorkspaceId,
+        alive_items: Vec<ItemId>,
+        cx: &mut WindowContext,
+    ) -> Task<gpui::Result<()>> {
+        cx.spawn(|_| IMAGE_VIEWER.delete_unloaded_items(workspace_id, alive_items))
+    }
+
+    fn serialize(
+        &mut self,
+        workspace: &mut Workspace,
+        item_id: ItemId,
+        _closing: bool,
+        cx: &mut ViewContext<Self>,
+    ) -> Option<Task<gpui::Result<()>>> {
+        let workspace_id = workspace.database_id()?;
+        let image_path = self.image_item.read(cx).file.as_local()?.abs_path(cx);
+
+        Some(cx.background_executor().spawn({
+            async move {
+                IMAGE_VIEWER
+                    .save_image_path(item_id, workspace_id, image_path)
+                    .await
+            }
+        }))
+    }
+
+    fn should_serialize(&self, _event: &Self::Event) -> bool {
+        false
     }
 }
 
@@ -157,6 +241,7 @@ impl FocusableView for ImageView {
 
 impl Render for ImageView {
     fn render(&mut self, cx: &mut ViewContext<Self>) -> impl IntoElement {
+        let image = self.image_item.read(cx).image.clone();
         let checkered_background = |bounds: Bounds<Pixels>, _, cx: &mut WindowContext| {
             let square_size = 32.0;
 
@@ -201,7 +286,7 @@ impl Render for ImageView {
             .left_0();
 
         div()
-            .track_focus(&self.focus_handle)
+            .track_focus(&self.focus_handle(cx))
             .size_full()
             .child(checkered_background)
             .child(
@@ -213,7 +298,7 @@ impl Render for ImageView {
                     // TODO: In browser based Tailwind & Flex this would be h-screen and we'd use w-full
                     .h_full()
                     .child(
-                        img(self.path.clone())
+                        img(image)
                             .object_fit(ObjectFit::ScaleDown)
                             .max_w_full()
                             .max_h_full(),
@@ -226,29 +311,27 @@ impl ProjectItem for ImageView {
     type Item = ImageItem;
 
     fn for_project_item(
-        _project: Model<Project>,
+        project: Model<Project>,
         item: Model<Self::Item>,
         cx: &mut ViewContext<Self>,
     ) -> Self
     where
         Self: Sized,
     {
-        Self {
-            path: item.read(cx).path.clone(),
-            focus_handle: cx.focus_handle(),
-        }
+        Self::new(item, project, cx)
     }
 }
 
 pub fn init(cx: &mut AppContext) {
     workspace::register_project_item::<ImageView>(cx);
-    workspace::register_deserializable_item::<ImageView>(cx)
+    workspace::register_serializable_item::<ImageView>(cx)
 }
 
 mod persistence {
+    use anyhow::Result;
     use std::path::PathBuf;
 
-    use db::{define_connection, query, sqlez_macros::sql};
+    use db::{define_connection, query, sqlez::statement::Statement, sqlez_macros::sql};
     use workspace::{ItemId, WorkspaceDb, WorkspaceId};
 
     define_connection! {
@@ -297,6 +380,30 @@ mod persistence {
                 FROM image_viewers
                 WHERE item_id = ? AND workspace_id = ?
             }
+        }
+
+        pub async fn delete_unloaded_items(
+            &self,
+            workspace: WorkspaceId,
+            alive_items: Vec<ItemId>,
+        ) -> Result<()> {
+            let placeholders = alive_items
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<&str>>()
+                .join(", ");
+
+            let query = format!("DELETE FROM image_viewers WHERE workspace_id = ? AND item_id NOT IN ({placeholders})");
+
+            self.write(move |conn| {
+                let mut statement = Statement::prepare(conn, query)?;
+                let mut next_index = statement.bind(&workspace, 1)?;
+                for id in alive_items {
+                    next_index = statement.bind(&id, next_index)?;
+                }
+                statement.exec()
+            })
+            .await
         }
     }
 }
